@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票智研 · 实时分析</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- 访问令牌门：首次访问需输入，验证通过后存浏览器本地 -->
+<div id="gateOverlay" class="gate-overlay hidden">
+  <div class="gate-card">
+    <span class="logo gate-logo">研</span>
+    <h2>股票智研</h2>
+    <p class="gate-sub">这是家庭内部分享的分析工具，请输入访问令牌</p>
+    <input id="gateInput" type="password" inputmode="numeric" placeholder="请输入访问令牌"
+           autocomplete="off">
+    <button id="gateBtn">进入</button>
+    <p class="gate-error hidden" id="gateError">令牌不正确，请重试</p>
+  </div>
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">研</span>
+    <div>
+      <h1>股票智研</h1>
+      <p>输入代码 · 实时分析财务 / 行情 / 资金 / 要闻</p>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+  <section class="search-panel">
+    <div class="search-box">
+      <input id="codeInput" type="text" placeholder="输入股票代码：A股 600519 / 港股 00700 / 美股 AAPL"
+             autocomplete="off" spellcheck="false">
+      <button id="analyzeBtn">开始分析</button>
+    </div>
+    <div class="quick-codes">
+      <span>试试：</span>
+      <button class="chip" data-code="600519">贵州茅台</button>
+      <button class="chip" data-code="300750">宁德时代</button>
+      <button class="chip" data-code="00700">腾讯控股</button>
+      <button class="chip" data-code="AAPL">苹果</button>
+    </div>
+  </section>
+
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p id="loadingText">正在拉取实时行情与财务数据…</p>
+  </div>
+
+  <div id="errorBox" class="error-box hidden"></div>
+
+  <div id="result" class="hidden">
+
+    <!-- 股票头部 -->
+    <section class="card stock-head">
+      <div class="stock-title">
+        <h2 id="sName">—</h2>
+        <span class="tag" id="sMarket">—</span>
+        <span class="tag code-tag" id="sCode">—</span>
+        <span class="session" id="sSession">—</span>
+      </div>
+      <div class="price-row">
+        <div class="price-main">
+          <span id="sPrice" class="price">—</span>
+          <span id="sChange" class="change">—</span>
+        </div>
+        <div class="price-sub" id="sOhlc">—</div>
+      </div>
+      <div class="source-note" id="sSource">—</div>
+    </section>
+
+    <!-- 关键指标卡 -->
+    <section class="metrics-grid" id="metricsGrid"></section>
+
+    <!-- 综合分析 -->
+    <section class="card">
+      <h3 class="card-title">综合研判 <span class="title-note">多因子规则引擎 · 多维评分 · 多空辩论</span></h3>
+      <div class="analysis-top">
+        <div id="gauge" class="gauge"></div>
+        <div class="rating-box">
+          <div class="rating-label">综合评级</div>
+          <div id="ratingText" class="rating-text">—</div>
+          <div id="ratingScore" class="rating-score">—</div>
+          <div class="dim-bars" id="dimBars"></div>
+        </div>
+      </div>
+      <div class="debate-wrap">
+        <div class="debate-col bull">
+          <h5>多方观点 <span class="debate-sub">Bull Case</span></h5>
+          <ul id="bullList"></ul>
+        </div>
+        <div class="debate-col bear">
+          <h5>空方观点 <span class="debate-sub">Bear Case</span></h5>
+          <ul id="bearList"></ul>
+        </div>
+      </div>
+      <div class="debate-verdict" id="debateVerdict"></div>
+      <div class="signals-wrap" id="signalsWrap"></div>
+      <div class="plan-box">
+        <h4>条件化操作参考</h4>
+        <ul id="conditionsList"></ul>
+      </div>
+    </section>
+
+    <!-- AI 深度研报（双模型） -->
+    <section class="card" id="aiCard">
+      <h3 class="card-title">AI 深度研报 <span class="title-note" id="aiModels">DeepSeek V4-Pro × Kimi K2.6 双模型协作</span></h3>
+      <div class="ai-loading" id="aiLoading">
+        <div class="ai-spinner"></div>
+        <div>
+          <p class="ai-loading-title">双模型深度推理中<span id="aiElapsed">（已用时 0s）</span></p>
+          <p class="ai-loading-sub">Kimi 正在通读新闻公告，DeepSeek 正在撰写综合研报，推理模型较慢，约需 1~3 分钟，请耐心等待</p>
+        </div>
+      </div>
+      <div class="ai-body hidden" id="aiBody">
+        <div class="ai-stance-row">
+          <span class="ai-stance" id="aiStance">—</span>
+          <span class="ai-time" id="aiTime"></span>
+        </div>
+        <div class="ai-section ai-core">
+          <h5>核心投资逻辑</h5>
+          <p id="aiCoreLogic"></p>
+        </div>
+        <div class="ai-grid">
+          <div class="ai-section"><h5>基本面</h5><p id="aiFundamental"></p></div>
+          <div class="ai-section"><h5>估值</h5><p id="aiValuation"></p></div>
+          <div class="ai-section"><h5>技术面</h5><p id="aiTechnical"></p></div>
+          <div class="ai-section"><h5>资金面</h5><p id="aiCapital"></p></div>
+        </div>
+        <div class="ai-section ai-news">
+          <h5>消息面深度解读（Kimi 通读原文）</h5>
+          <p class="ai-news-summary" id="aiNewsSummary"></p>
+          <p class="ai-news-policy" id="aiPolicy"></p>
+          <div id="aiNewsItems"></div>
+        </div>
+        <div class="ai-section ai-risks">
+          <h5>风险提示</h5>
+          <ul id="aiRisks"></ul>
+        </div>
+        <div class="ai-section ai-conclusion">
+          <h5>结论与操作参考</h5>
+          <p id="aiConclusion"></p>
+        </div>
+      </div>
+      <div class="ai-error hidden" id="aiError"></div>
+    </section>
+
+    <!-- A股特色透视 -->
+    <section class="card hidden" id="ashareCard">
+      <h3 class="card-title">A股特色透视 <span class="title-note">涨跌停 · 板块轮动 · 龙虎榜 · 解禁</span></h3>
+      <div class="ashare-grid">
+        <div class="ashare-block">
+          <h5>涨跌停与交易规则</h5>
+          <div class="ashare-body" id="limitInfo"></div>
+        </div>
+        <div class="ashare-block">
+          <h5>所属板块与轮动位置</h5>
+          <div class="ashare-body" id="sectorInfo"></div>
+        </div>
+        <div class="ashare-block">
+          <h5>龙虎榜热钱（近120日）</h5>
+          <div class="ashare-body" id="billboardInfo"></div>
+        </div>
+        <div class="ashare-block">
+          <h5>限售解禁日程</h5>
+          <div class="ashare-body" id="unlockInfo"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- K线 -->
+    <section class="card">
+      <h3 class="card-title">行情走势 <span class="title-note">日K · 均线 · 成交量 · MACD</span></h3>
+      <div id="klineChart" class="chart-tall"></div>
+    </section>
+
+    <!-- 资金流 -->
+    <section class="card" id="flowCard">
+      <h3 class="card-title">主力资金流向 <span class="title-note">近10个交易日 · 主力=超大单+大单</span></h3>
+      <div class="flow-summary" id="flowSummary"></div>
+      <div id="flowChart" class="chart-mid"></div>
+    </section>
+
+    <!-- 财务 -->
+    <section class="card" id="finCard">
+      <h3 class="card-title">财务报告摘要 <span class="title-note" id="finNote"></span></h3>
+      <div class="table-wrap">
+        <table id="finTable">
+          <thead>
+            <tr>
+              <th>报告期</th><th>营业总收入</th><th>营收同比</th><th>归母净利润</th>
+              <th>净利同比</th><th>毛利率</th><th>净利率</th><th>ROE(加权)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 新闻公告 -->
+    <section class="two-col">
+      <div class="card">
+        <h3 class="card-title">近期要闻</h3>
+        <ul class="news-list" id="newsList"></ul>
+      </div>
+      <div class="card" id="annCard">
+        <h3 class="card-title">公司公告</h3>
+        <ul class="news-list" id="annList"></ul>
+      </div>
+    </section>
+
+    <footer class="disclaimer" id="disclaimerBox"></footer>
+  </div>
+</main>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

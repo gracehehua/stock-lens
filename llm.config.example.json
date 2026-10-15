@@ -1,0 +1,13 @@
+{
+  "accessToken": "在此填写访问口令（如 200093）",
+  "deepseek": {
+    "baseUrl": "https://api.deepseek.com/v1/chat/completions",
+    "apiKey": "在此填写 DeepSeek API Key",
+    "model": "deepseek-v4-pro"
+  },
+  "kimi": {
+    "baseUrl": "https://api.moonshot.cn/v1/chat/completions",
+    "apiKey": "在此填写 Kimi API Key",
+    "model": "kimi-k2.6"
+  }
+}
