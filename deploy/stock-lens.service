@@ -1,0 +1,21 @@
+[Unit]
+Description=Stock Lens Node.js service (stocklens.vip.cpolar.cn)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/brian/WorkBuddy/stock-lens
+Environment=NODE_ENV=production
+Environment=PORT=8630
+ExecStart=/home/brian/.workbuddy/binaries/node/versions/22.22.2/bin/node /home/brian/WorkBuddy/stock-lens/server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+StandardOutput=append:/home/brian/WorkBuddy/stock-lens/logs/server.log
+StandardError=append:/home/brian/WorkBuddy/stock-lens/logs/server.log
+
+[Install]
+WantedBy=default.target

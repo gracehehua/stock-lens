@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>持仓组合 · 股票智研</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">研</span>
+    <div>
+      <h1>持仓组合</h1>
+      <p id="pfHeaderSub">招商证券账户 · 持仓全景分析</p>
+    </div>
+  </div>
+  <a class="nav-link" href="index.html">← 个股分析</a>
+  <a class="nav-link" href="quant.html" style="margin-left:8px">量化选股 →</a>
+</header>
+
+<main class="container">
+  <div id="pfLoading" class="loading">
+    <div class="spinner"></div>
+    <p>正在拉取持仓数据与最新行情…</p>
+  </div>
+  <div id="pfError" class="error-box hidden"></div>
+
+  <div id="pfBody" class="hidden">
+    <!-- 账户总览 -->
+    <section class="pf-cards" id="pfCards"></section>
+
+    <!-- 图表：权重 + 板块 -->
+    <section class="pf-charts">
+      <div class="card">
+        <h3 class="card-title">持仓权重 <span class="title-note">按快照市值</span></h3>
+        <div id="weightChart" class="pf-chart"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">板块分布 <span class="title-note">市值占比与盈亏</span></h3>
+        <div id="sectorChart" class="pf-chart"></div>
+      </div>
+    </section>
+
+    <!-- 组合洞察 -->
+    <section class="pf-insights" id="pfInsights"></section>
+
+    <!-- 持仓明细 -->
+    <section class="card">
+      <h3 class="card-title">持仓明细 <span class="title-note" id="pfTableNote"></span></h3>
+      <div class="pf-table-wrap">
+        <table id="pfTable">
+          <thead>
+            <tr>
+              <th class="l">股票</th><th class="l">板块</th><th>数量</th><th>成本</th>
+              <th>快照价</th><th>最新价</th><th>市值(元)</th><th class="l">权重</th>
+              <th>持仓盈亏</th><th>盈亏%</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="pf-note" id="pfNote"></p>
+    </section>
+
+    <footer class="disclaimer">免责声明：本页面基于招商证券 App 持仓截图（2026-10-17 12:58）提取的数据与公开行情接口生成，仅供参考，不构成投资建议。市场有风险，投资需谨慎。</footer>
+  </div>
+</main>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="portfolio.js"></script>
+</body>
+</html>

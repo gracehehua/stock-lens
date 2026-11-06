@@ -471,6 +471,103 @@
     }).join('');
   }
 
+  /* ---------- 名称模糊搜索（联想下拉） ---------- */
+
+  var suggestBox = $('suggestBox');
+  var suggestTimer = null;
+  var suggestSeq = 0; // 防止慢响应覆盖新输入
+
+  function isCodeLike(s) {
+    return /^\d{1,6}$/.test(s) || /^[A-Za-z.]{1,6}$/.test(s);
+  }
+
+  function hideSuggest() {
+    suggestBox.classList.add('hidden');
+    suggestBox.innerHTML = '';
+  }
+
+  function renderSuggest(list, note) {
+    if (!list.length) {
+      suggestBox.innerHTML = '<div class="suggest-empty">' + esc(note || '未找到匹配的股票') + '</div>';
+      suggestBox.classList.remove('hidden');
+      return;
+    }
+    suggestBox.innerHTML = list.map(function (r, i) {
+      return '<div class="suggest-item" data-i="' + i + '">' +
+        '<span class="sg-name">' + esc(r.name) + '</span>' +
+        '<span class="sg-code">' + esc(r.code) + '</span>' +
+        '<span class="sg-market">' + esc(r.market) + '</span></div>';
+    }).join('');
+    suggestBox.classList.remove('hidden');
+    suggestBox.querySelectorAll('.suggest-item').forEach(function (el) {
+      el.addEventListener('mousedown', function (e) {
+        e.preventDefault(); // 先于 input blur 触发
+        var item = list[+el.getAttribute('data-i')];
+        hideSuggest();
+        codeInput.value = item.code + ' ' + item.name;
+        analyze(item.code);
+      });
+    });
+  }
+
+  async function fetchSuggest(kw) {
+    var seq = ++suggestSeq;
+    try {
+      var resp = await fetch('/api/search?q=' + encodeURIComponent(kw), { headers: authHeaders() });
+      if (handleAuthFailure(resp)) return;
+      var d = await resp.json();
+      if (seq !== suggestSeq) return; // 已有更新的输入，丢弃旧结果
+      if (!resp.ok) throw new Error(d.error || '搜索失败');
+      renderSuggest(d.results || []);
+    } catch (_) {
+      if (seq === suggestSeq) renderSuggest([], '搜索服务暂时不可用');
+    }
+  }
+
+  codeInput.addEventListener('input', function () {
+    var kw = codeInput.value.trim();
+    if (suggestTimer) clearTimeout(suggestTimer);
+    if (kw.length < 1) { hideSuggest(); return; }
+    suggestTimer = setTimeout(function () { fetchSuggest(kw); }, 250);
+  });
+  codeInput.addEventListener('blur', function () { setTimeout(hideSuggest, 150); });
+  codeInput.addEventListener('focus', function () {
+    var kw = codeInput.value.trim();
+    if (kw && suggestBox.innerHTML) suggestBox.classList.remove('hidden');
+  });
+
+  /** 提交入口：代码直接分析；名称先搜索，唯一/精确匹配直接分析，多候选弹下拉 */
+  async function submitQuery(raw) {
+    var q = (raw || '').trim();
+    if (!q) { showError('请输入股票代码或名称'); return; }
+    hideSuggest();
+    if (isCodeLike(q)) { analyze(q); return; }
+    $('errorBox').classList.add('hidden');
+    setLoading(true, '正在搜索「' + q + '」匹配的股票…');
+    try {
+      var resp = await fetch('/api/search?q=' + encodeURIComponent(q), { headers: authHeaders() });
+      if (handleAuthFailure(resp)) return;
+      var d = await resp.json();
+      if (!resp.ok) throw new Error(d.error || '搜索失败');
+      var list = d.results || [];
+      if (!list.length) throw new Error('未找到与「' + q + '」匹配的 A股/港股/美股标的，请换个关键词或直接输入代码');
+      var exact = list.filter(function (r) { return r.name === q; });
+      if (list.length === 1 || exact.length === 1) {
+        var pick = exact[0] || list[0];
+        codeInput.value = pick.code + ' ' + pick.name;
+        analyze(pick.code);
+      } else {
+        setLoading(false);
+        renderSuggest(list, null);
+        showError('找到多个匹配，请在下方候选中选择一只：');
+        $('errorBox').classList.remove('hidden');
+      }
+    } catch (err) {
+      showError(err.message || '网络异常，请稍后重试');
+      setLoading(false);
+    }
+  }
+
   /* ---------- 主流程 ---------- */
 
   async function analyze(code) {
@@ -568,9 +665,10 @@
     $('aiRisks').innerHTML = (r.risks || []).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('');
   }
 
-  analyzeBtn.addEventListener('click', function () { analyze(codeInput.value); });
+  analyzeBtn.addEventListener('click', function () { submitQuery(codeInput.value); });
   codeInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') analyze(codeInput.value);
+    if (e.key === 'Enter') submitQuery(codeInput.value);
+    if (e.key === 'Escape') hideSuggest();
   });
   document.querySelectorAll('.chip').forEach(function (chip) {
     chip.addEventListener('click', function () {
@@ -581,4 +679,14 @@
   window.addEventListener('resize', function () {
     charts.forEach(function (c) { c.resize(); });
   });
+
+  // 深链支持：/?code=600519 直接分析（持仓页跳转用）
+  (function () {
+    var m = location.search.match(/[?&]code=([^&]+)/);
+    if (m) {
+      var c = decodeURIComponent(m[1]).split(/\s/)[0];
+      codeInput.value = decodeURIComponent(m[1]);
+      analyze(c);
+    }
+  })();
 })();

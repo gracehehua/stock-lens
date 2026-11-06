@@ -146,6 +146,155 @@ async function fetchJsonp(url, timeoutMs) {
   return JSON.parse(text.slice(start + 1, end));
 }
 
+/* ---------------- 名称模糊搜索 ---------------- */
+
+const SEARCH_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8'; // 东财搜索联想公开 token（官网前端同款）
+const searchCache = new Map(); // keyword -> {t, results}
+
+/** 东财搜索联想（主源）：输入名称/拼音/代码片段，返回 A股/港股/美股 候选。
+ *  QuoteID 直接就是 secid（如 1.600519 / 116.00700 / 105.AAPL），省去二次探测 */
+async function searchViaEastmoney(keyword) {
+  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(keyword)}` +
+    `&type=14&token=${SEARCH_TOKEN}&count=12`;
+  const j = await fetchJson(url, 8000, { ...EM_HEADERS, Referer: 'https://www.eastmoney.com/' });
+  const list = j && j.QuotationCodeTable && j.QuotationCodeTable.Data;
+  if (!Array.isArray(list)) throw new Error('em search empty');
+  const out = [];
+  for (const r of list) {
+    const classify = r.Classify;
+    if (classify !== 'AStock' && classify !== 'HK' && classify !== 'UsStock') continue; // 过滤板块/指数/期货/权证
+    const code = r.Code, quoteId = r.QuoteID;
+    if (!code || !quoteId) continue;
+    let market;
+    if (classify === 'AStock') {
+      const c0 = code[0];
+      market = (c0 === '6' || c0 === '9') ? 'A股(沪)' : (c0 === '4' || c0 === '8') ? 'A股(北)' : 'A股(深)';
+    } else if (classify === 'HK') {
+      if (!/^\d{5}$/.test(code)) continue;
+      if (/购|沽|牛|熊/.test(r.Name || '')) continue; // 剔除窝轮/牛熊证，只留港股正股
+      market = '港股';
+    } else {
+      market = '美股';
+    }
+    out.push({ code, name: r.Name, market, secid: quoteId });
+  }
+  return out;
+}
+
+/** 腾讯 smartbox（备用源）：GBK 编码 + \uXXXX 转义，需双重解码 */
+async function searchViaTencent(keyword) {
+  const text = await fetchGbk(`https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(keyword)}&t=all`, 8000);
+  const m = text.match(/v_hint="([^"]*)"/);
+  if (!m || !m[1]) return [];
+  const decoded = m[1].replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  const out = [];
+  for (const item of decoded.split('^')) {
+    const f = item.split('~');
+    if (f.length < 3) continue;
+    const mkt = f[0], code = f[1], name = f[2];
+    if (mkt === 'sh' || mkt === 'sz' || mkt === 'bj') {
+      const c0 = code[0];
+      const market = mkt === 'sh' ? 'A股(沪)' : mkt === 'bj' ? 'A股(北)' : 'A股(深)';
+      const secid = (c0 === '6' || c0 === '9') ? `1.${code}` : `0.${code}`;
+      out.push({ code, name, market, secid });
+    } else if (mkt === 'hk' && /^\d{5}$/.test(code) && !/购|沽|牛|熊/.test(name)) {
+      out.push({ code, name, market: '港股', secid: `116.${code}` });
+    } else if (mkt === 'us') {
+      const base = code.replace(/\..*$/, ''); // 腾讯美股代码带交易所后缀（AAPL.OQ），归一化
+      out.push({ code: base, name, market: '美股', secid: `105.${base}` });
+    }
+  }
+  return out;
+}
+
+/** 名称模糊搜索：双源互备，60s 缓存 */
+async function searchStocks(keyword) {
+  const kw = String(keyword || '').trim();
+  if (!kw) return [];
+  const hit = searchCache.get(kw);
+  if (hit && Date.now() - hit.t < 60e3) return hit.results;
+  let results = [];
+  try {
+    results = await searchViaEastmoney(kw);
+  } catch (_) {
+    try { results = await searchViaTencent(kw); } catch (_) { results = []; }
+  }
+  if (!results.length) {
+    try { results = await searchViaTencent(kw); } catch (_) { /* 忽略 */ }
+  }
+  // 按相关性粗排：名称精确匹配 > 名称前缀 > 代码前缀 > 其他
+  const score = (r) => {
+    if (r.name === kw || r.code === kw.toUpperCase()) return 0;
+    if (r.name.startsWith(kw)) return 1;
+    if (r.code.toUpperCase().startsWith(kw.toUpperCase())) return 2;
+    return 3;
+  };
+  results.sort((a, b) => score(a) - score(b));
+  results = results.slice(0, 8);
+  searchCache.set(kw, { t: Date.now(), results });
+  return results;
+}
+
+/* ---------------- 持仓组合分析 ---------------- */
+
+const PORTFOLIO_FILE = path.join(__dirname, 'portfolio.json');
+let portfolioCache = null; // {t, data}
+
+async function getPortfolio() {
+  if (portfolioCache && Date.now() - portfolioCache.t < 60e3) return portfolioCache.data;
+  const raw = JSON.parse(fs.readFileSync(PORTFOLIO_FILE, 'utf8'));
+  const holdings = [];
+  // 串行拉行情（节流保护），某只失败不拖垮整体
+  for (const h of raw.holdings) {
+    const item = { ...h, livePrice: null, liveChangePct: null, driftPct: null, quoteOk: false };
+    try {
+      const resolved = await resolveSecid(secidCandidates(h.code));
+      if (resolved) {
+        const q = await getQuote(resolved);
+        if (q && q.price != null) {
+          item.livePrice = q.price;
+          item.liveChangePct = q.changePct;
+          item.driftPct = +(((q.price - h.snapshotPrice) / h.snapshotPrice) * 100).toFixed(2);
+          item.quoteOk = true;
+          item.quoteSource = q.source;
+        }
+      }
+    } catch (_) { /* 单只行情失败忽略 */ }
+    item.weight = +(h.value / raw.stockValue * 100).toFixed(2);
+    holdings.push(item);
+  }
+  // 板块集中度
+  const bySector = {};
+  for (const h of holdings) {
+    if (!bySector[h.sector]) bySector[h.sector] = { sector: h.sector, value: 0, pnl: 0, count: 0 };
+    bySector[h.sector].value += h.value;
+    bySector[h.sector].pnl += h.pnl;
+    bySector[h.sector].count += 1;
+  }
+  const sectors = Object.values(bySector)
+    .map((s) => ({ ...s, weight: +(s.value / raw.stockValue * 100).toFixed(2) }))
+    .sort((a, b) => b.value - a.value);
+  // 汇总洞察
+  const sorted = [...holdings].sort((a, b) => b.pnl - a.pnl);
+  const top3Weight = +[...holdings].sort((a, b) => b.value - a.value).slice(0, 3)
+    .reduce((s, h) => s + h.weight, 0).toFixed(2);
+  const data = {
+    ...raw,
+    holdings,
+    sectors,
+    insights: {
+      best: sorted[0] || null,
+      worst: sorted[sorted.length - 1] || null,
+      top3Weight,
+      losers: holdings.filter((h) => h.pnl < 0).length,
+      winners: holdings.filter((h) => h.pnl > 0).length,
+    },
+    fetchedAt: new Date().toISOString(),
+  };
+  portfolioCache = { t: Date.now(), data };
+  return data;
+}
+
 /* ---------------- 市场识别 ---------------- */
 
 /**
@@ -1068,6 +1217,299 @@ async function analyze(rawCode) {
   return data;
 }
 
+/* ---------------- 量化选股与回测 ---------------- */
+/*
+ * 流程：全A快照海选（流动性/估值过滤）→ 拉日K算因子 → 综合评分
+ * 因子（全部可由日K+快照计算，无前视偏差）：
+ *   动量 mom60/mom20、趋势（价>MA20>MA60）、低波动、量比温和度
+ * 回测：N 日定期调仓、Top10 等权、双边各千一手续费，对照沪深300
+ */
+const QUANT_CACHE_DIR = path.join(__dirname, 'quant-cache');
+const quantMem = { universe: null, backtest: null, top10: null };
+
+/** 全A快照（东财 clist，沪深主板+科创+创业，按总市值降序分页）。
+ *  内存 10 分钟 + 落盘 6 小时兜底（变化慢，防重启后重新撞限流） */
+async function fetchUniverseSnapshot() {
+  if (quantMem.universe && Date.now() - quantMem.universe.t < 10 * 60e3) return quantMem.universe.list;
+  const cacheFile = path.join(QUANT_CACHE_DIR, '_universe.json');
+  let list = null;
+  try {
+    const fs0 = encodeURIComponent('m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23');
+    const fields = 'f12,f14,f2,f3,f8,f9,f23,f20,f62';
+    const all = [];
+    for (let pn = 1; pn <= 6; pn++) {
+      const j = await fetchJson(
+        `https://push2.eastmoney.com/api/qt/clist/get?fs=${fs0}&fltt=2&invt=2&fields=${fields}&fid=f20&po=1&pz=1000&pn=${pn}`,
+        15000
+      );
+      const raw = j && j.data && j.data.diff;
+      const arr = Array.isArray(raw) ? raw : raw ? Object.values(raw) : null; // clist 的 diff 可能是对象而非数组
+      if (!arr || !arr.length) break;
+      all.push(...arr);
+      if (!j.data.total || all.length >= j.data.total) break; // 东财会截断单页条数，按 total 判断翻页而非本页条数
+    }
+    const num = (v) => (v === '-' || v == null ? null : Number(v));
+    list = all.map((d) => ({
+      code: d.f12, name: d.f14, price: num(d.f2), chgPct: num(d.f3),
+      turnover: num(d.f8), pe: num(d.f9), pb: num(d.f23),
+      mcap: num(d.f20), mainInflow: num(d.f62),
+    })).filter((s) => s.code && s.price != null);
+    if (!list.length) list = null;
+  } catch (e) {
+    console.error('[quant] 全A快照拉取失败，尝试磁盘缓存:', e.message);
+  }
+  if (!list) {
+    try {
+      const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (Date.now() - j.t < 6 * 3600e3 && j.list && j.list.length) list = j.list;
+    } catch (_) { /* 无磁盘缓存 */ }
+  }
+  if (!list) {
+    // 终极兜底：数据源全被限流时，从 K 线磁盘缓存合成股票池（仅代码，因子全靠 K 线，不影响回测/选股打分）
+    try {
+      const files = fs.readdirSync(QUANT_CACHE_DIR).filter((f) => /^\d{6}\.json$/.test(f));
+      if (files.length) {
+        list = files.map((f) => {
+          const code = f.replace('.json', '');
+          return { code, name: code, price: 10, chgPct: null, turnover: null, pe: null, pb: null, mcap: 1e12, mainInflow: null, synth: true };
+        });
+        console.log(`[quant] 数据源限流，使用本地缓存合成股票池 ${list.length} 只`);
+      }
+    } catch (_) { /* 无缓存目录 */ }
+  } else {
+    try { fs.mkdirSync(QUANT_CACHE_DIR, { recursive: true }); fs.writeFileSync(cacheFile, JSON.stringify({ t: Date.now(), list })); } catch (_) {}
+  }
+  if (!list) throw new Error('全A股票列表拉取失败且无可用缓存');
+  quantMem.universe = { t: Date.now(), list };
+  return list;
+}
+
+/** 海选过滤：剔除 ST/退市/次新不足、低价、微盘、亏损或估值异常 */
+function prefilter(list, { minMcap = 30e8, topN = 300 } = {}) {
+  return list
+    .filter((s) =>
+      !/ST|退/.test(s.name) &&
+      s.price >= 2 && s.mcap != null && s.mcap >= minMcap &&
+      (s.pe == null || (s.pe > 0 && s.pe < 200)))
+    .slice(0, topN)
+    .map((s) => {
+      const c = s.code[0];
+      const secid = (c === '6' || c === '9') ? `1.${s.code}` : `0.${s.code}`;
+      return { ...s, secid };
+    });
+}
+
+/** 带落盘缓存的日K（供回测/选股批量调用），当日缓存当日有效；fromCache 标记供调用方做限流熔断 */
+async function getKlineCached(secid, code, count = 260) {
+  try { fs.mkdirSync(QUANT_CACHE_DIR, { recursive: true }); } catch (_) {}
+  const file = path.join(QUANT_CACHE_DIR, `${code}.json`);
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (j.date === today && j.klines && j.klines.length >= count - 10) {
+      j.klines.fromCache = true;
+      return j.klines;
+    }
+  } catch (_) { /* 无缓存 */ }
+  const klines = await getKline({ secid, code, market: 'A股', txSymbol: null }, count);
+  if (klines && klines.length >= 60) {
+    try { fs.writeFileSync(file, JSON.stringify({ date: today, klines })); } catch (_) {}
+  }
+  return klines || [];
+}
+
+/** 因子计算：输入日K数组，输出各因子与分项（截至末根K线） */
+function computeFactors(k) {
+  if (!k || k.length < 120) return null;
+  const n = k.length;
+  const closes = k.map((x) => x.close);
+  const ret = (d) => (n > d ? closes[n - 1] / closes[n - 1 - d] - 1 : null);
+  const mom20 = ret(20), mom60 = ret(60);
+  if (mom20 == null || mom60 == null) return null;
+  const ma = (d) => closes.slice(n - d).reduce((a, b) => a + b, 0) / d;
+  const ma20 = ma(20), ma60 = ma(60);
+  const trend = (closes[n - 1] > ma20 ? 0.5 : 0) + (ma20 > ma60 ? 0.5 : 0);
+  // 20 日年化波动率
+  const rets = [];
+  for (let i = n - 20; i < n; i++) rets.push(closes[i] / closes[i - 1] - 1);
+  const m = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const vol20 = Math.sqrt(rets.reduce((a, r) => a + (r - m) ** 2, 0) / rets.length) * Math.sqrt(244);
+  // 量比温和度：5 日均量 / 60 日均量，0.8~2.5 给满分，过冷过热衰减
+  const v5 = k.slice(n - 5).reduce((a, x) => a + x.volume, 0) / 5;
+  const v60 = k.slice(n - 60).reduce((a, x) => a + x.volume, 0) / 60;
+  const vr = v60 > 0 ? v5 / v60 : 1;
+  const volRatioScore = vr >= 0.8 && vr <= 2.5 ? 1 : vr < 0.8 ? Math.max(0, vr / 0.8) : Math.max(0, 1 - (vr - 2.5) / 2.5);
+  return { mom20, mom60, trend, vol20, volRatio: vr, volRatioScore };
+}
+
+/** 截面打分：rank 归一到 0~100（升序排序后越靠后 _r 越大 = 因子值越强分越高），再加权 */
+function scoreCrossSection(items) {
+  const rank = (arr, key) => {
+    const sorted = [...arr].sort((a, b) => a.f[key] - b.f[key]);
+    sorted.forEach((it, i) => { it._r = it._r || {}; it._r[key] = sorted.length > 1 ? (i / (sorted.length - 1)) * 100 : 50; });
+  };
+  rank(items, 'mom60');
+  rank(items, 'mom20');
+  rank(items, 'vol20');
+  for (const it of items) {
+    const mom60s = it._r.mom60, mom20s = it._r.mom20, vols = 100 - it._r.vol20; // 波动越小分越高
+    it.score = +(0.30 * mom60s + 0.25 * mom20s + 0.20 * (it.f.trend * 100) + 0.15 * vols + 0.10 * (it.f.volRatioScore * 100)).toFixed(1);
+  }
+  items.sort((a, b) => b.score - a.score);
+  return items;
+}
+
+/** 批量拉因子（串行节流，带进度日志；连续 8 只失败判定数据源限流，熔断跳过剩余网络请求） */
+async function buildFactorTable(universe) {
+  const out = [];
+  let failStreak = 0;
+  for (let i = 0; i < universe.length; i++) {
+    const s = universe[i];
+    if ((i + 1) % 25 === 0) console.log(`[quant] kline ${i + 1}/${universe.length}`);
+    if (failStreak >= 8) { console.log('[quant] 限流熔断，跳过剩余网络拉取'); break; }
+    try {
+      const k = await getKlineCached(s.secid, s.code, 260);
+      const f = computeFactors(k);
+      if (f) { out.push({ ...s, f }); failStreak = 0; }
+      else failStreak = k.fromCache ? 0 : failStreak + 1;
+    } catch (e) { failStreak++; console.error('[quant]', s.code, e.message); }
+  }
+  return scoreCrossSection(out);
+}
+
+/** 每日 Top10：海选 → 因子打分 → 头部名单 */
+async function runTop10(topN = 300) {
+  if (quantMem.top10 && Date.now() - quantMem.top10.t < 10 * 60e3) return quantMem.top10.data;
+  const snap = await fetchUniverseSnapshot();
+  const universe = prefilter(snap, { topN });
+  const table = await buildFactorTable(universe);
+  const top = table.slice(0, 10).map((s, i) => ({
+    rank: i + 1, code: s.code, name: s.name, score: s.score,
+    price: s.price, chgPct: s.chgPct, pe: s.pe, pb: s.pb,
+    mcapYi: s.mcap != null ? +(s.mcap / 1e8).toFixed(1) : null,
+    turnover: s.turnover, mainInflowWan: s.mainInflow != null ? +(s.mainInflow / 1e4).toFixed(0) : null,
+    mom20Pct: +(s.f.mom20 * 100).toFixed(1), mom60Pct: +(s.f.mom60 * 100).toFixed(1),
+    vol20Pct: +(s.f.vol20 * 100).toFixed(1),
+    planWeightPct: 10, // 等权
+  }));
+  const data = {
+    top,
+    universeSize: universe.length,
+    scored: table.length,
+    generatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+    note: '因子：60/20日动量+趋势+低波动+量比温和度，等权10%/只。仅为量化规则输出，不构成投资建议。',
+  };
+  quantMem.top10 = { t: Date.now(), data };
+  return data;
+}
+
+/** Top10 CSV（带 BOM，Excel 直接打开不乱码） */
+function top10Csv(data) {
+  const head = '排名,代码,名称,综合评分,最新价,今日涨跌%,PE,PB,总市值(亿),换手%,主力净流入(万),20日动量%,60日动量%,年化波动%,建议仓位%';
+  const rows = data.top.map((r) => [r.rank, r.code, r.name, r.score, r.price, r.chgPct, r.pe, r.pb, r.mcapYi, r.turnover, r.mainInflowWan, r.mom20Pct, r.mom60Pct, r.vol20Pct, r.planWeightPct].join(','));
+  const foot = `\n生成时间,${data.generatedAt},股票池,${data.universeSize}只,,,,,,,,,,\n说明,"${data.note}",,,,,,,,,,,,`;
+  return '﻿' + head + '\n' + rows.join('\n') + foot + '\n';
+}
+
+/** 回测：rebalance 个交易日调仓一次，Top10 等权，双边各 fee 手续费 */
+async function runBacktest({ universeSize = 300, days = 250, rebalance = 5, fee = 0.001 } = {}) {
+  const cacheKey = `${universeSize}-${days}-${rebalance}-${fee}`;
+  if (quantMem.backtest && quantMem.backtest.key === cacheKey && Date.now() - quantMem.backtest.t < 30 * 60e3) {
+    return quantMem.backtest.data;
+  }
+  const snap = await fetchUniverseSnapshot();
+  const universe = prefilter(snap, { topN: universeSize });
+  // 基准：沪深300（缓存固定 260 根，与选股共用，避免缓存不一致重拉）
+  const bench = await getKlineCached('1.000300', '000300', 260);
+  if (bench.length < days / 2) throw new Error('基准沪深300 K线拉取失败');
+  // 每只股票 K线（复用选股缓存；同样带限流熔断）
+  const kmap = new Map();
+  let failStreak = 0;
+  for (let i = 0; i < universe.length; i++) {
+    const s = universe[i];
+    if ((i + 1) % 25 === 0) console.log(`[backtest] kline ${i + 1}/${universe.length}`);
+    if (failStreak >= 8) { console.log('[backtest] 限流熔断，仅使用已缓存数据'); break; }
+    try {
+      const k = await getKlineCached(s.secid, s.code, 260);
+      if (k.length >= 120) { kmap.set(s.code, k); failStreak = 0; }
+      else failStreak = k.fromCache ? 0 : failStreak + 1;
+    } catch (_) { failStreak++; }
+  }
+  // 对齐日期轴（用基准的交易日）
+  const bDates = bench.map((x) => x.date);
+  const bClose = new Map(bench.map((x) => [x.date, x.close]));
+  const endIdx = bDates.length - 1;
+  const startIdx = Math.max(120, endIdx - days + 1);
+  // 每股 date->close 索引
+  const idxMaps = new Map();
+  for (const [code, k] of kmap) idxMaps.set(code, new Map(k.map((x) => [x.date, x.close])));
+  const closesOf = (code) => kmap.get(code);
+  // 逐调仓点模拟
+  const curve = [], benchCurve = [];
+  let equity = 1;
+  const periodRets = [], benchPeriodRets = [];
+  for (let t = startIdx; t <= endIdx; t += rebalance) {
+    const t2 = Math.min(t + rebalance, endIdx);
+    const d0 = bDates[t], d1 = bDates[t2];
+    // 选股：用 t 日之前数据打分
+    const items = [];
+    for (const s of universe) {
+      const k = closesOf(s.code);
+      if (!k) continue;
+      const pos = k.findIndex((x) => x.date >= d0);
+      if (pos < 120) continue; // 历史不足
+      const f = computeFactors(k.slice(0, pos + 1));
+      if (f) items.push({ code: s.code, f });
+    }
+    if (!items.length) continue;
+    scoreCrossSection(items);
+    const picks = items.slice(0, 10);
+    // 区间收益
+    const rets = [];
+    for (const p of picks) {
+      const m = idxMaps.get(p.code);
+      const c0 = m.get(d0), c1 = m.get(d1);
+      if (c0 && c1) rets.push(c1 / c0 - 1);
+    }
+    if (!rets.length) continue;
+    const portRet = rets.reduce((a, b) => a + b, 0) / rets.length - fee * 2; // 全额换仓近似
+    const bRet = bClose.get(d1) / bClose.get(d0) - 1;
+    equity *= 1 + portRet;
+    periodRets.push(portRet);
+    benchPeriodRets.push(bRet);
+    curve.push({ date: d1, equity: +equity.toFixed(4) });
+    benchCurve.push({ date: d1, equity: +(benchCurve.length ? benchCurve[benchCurve.length - 1].equity * (1 + bRet) : 1 + bRet).toFixed(4) });
+  }
+  // 统计
+  const n = periodRets.length;
+  const stats = (rets, totalRet) => {
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const sd = Math.sqrt(rets.reduce((a, r) => a + (r - mean) ** 2, 0) / rets.length);
+    const periodsPerYear = 244 / rebalance;
+    const ann = Math.pow(1 + totalRet, periodsPerYear / n) - 1;
+    // 最大回撤
+    let peak = -Infinity, mdd = 0, run = 1;
+    for (const r of rets) { run *= 1 + r; peak = Math.max(peak, run); mdd = Math.min(mdd, run / peak - 1); }
+    const sharpe = sd > 0 ? (mean * periodsPerYear) / (sd * Math.sqrt(periodsPerYear)) : null;
+    return { ann: +(ann * 100).toFixed(2), maxDD: +(mdd * 100).toFixed(2), sharpe: sharpe != null ? +sharpe.toFixed(2) : null };
+  };
+  const totalRet = equity - 1;
+  const bTotal = benchCurve.length ? benchCurve[benchCurve.length - 1].equity - 1 : 0;
+  const winRate = n ? +(periodRets.filter((r, i) => r > benchPeriodRets[i]).length / n * 100).toFixed(1) : null;
+  const data = {
+    params: { universeSize, days, rebalanceDays: rebalance, feePerSide: fee },
+    strategy: { totalReturnPct: +(totalRet * 100).toFixed(2), ...stats(periodRets, totalRet) },
+    benchmark: { name: '沪深300', totalReturnPct: +(bTotal * 100).toFixed(2), ...stats(benchPeriodRets, bTotal) },
+    excessPct: +((totalRet - bTotal) * 100).toFixed(2),
+    winRatePct: winRate, rebalances: n,
+    curve, benchCurve,
+    generatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+    note: '简化假设：调仓日收盘价成交、Top10等权、每次调仓近似全额换手（双边各千一）、未计冲击成本与涨跌停无法成交情形。历史回测不代表未来收益。',
+  };
+  quantMem.backtest = { key: cacheKey, t: Date.now(), data };
+  return data;
+}
+
 /* ---------------- HTTP 服务 ---------------- */
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
@@ -1098,6 +1540,59 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok }));
     }
     if (u.pathname.startsWith('/api/') && !checkAuth(req, res)) return;
+    if (u.pathname === '/api/portfolio') {
+      try {
+        const data = await getPortfolio();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(data));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '读取持仓数据失败：' + e.message }));
+      }
+    }
+    if (u.pathname === '/api/quant/top10') {
+      try {
+        const data = await runTop10(300);
+        if ((u.searchParams.get('format') || '') === 'csv') {
+          res.writeHead(200, {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': `attachment; filename="top10-${new Date().toISOString().slice(0, 10)}.csv"`,
+          });
+          return res.end(top10Csv(data));
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(data));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '选股计算失败：' + e.message }));
+      }
+    }
+    if (u.pathname === '/api/quant/backtest') {
+      try {
+        const p = (k, d, min, max) => Math.min(max, Math.max(min, +(u.searchParams.get(k) || d)));
+        const data = await runBacktest({
+          universeSize: p('universe', 300, 50, 800),
+          days: p('days', 250, 60, 480),
+          rebalance: p('rebalance', 5, 5, 20),
+          fee: 0.001,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(data));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '回测计算失败：' + e.message }));
+      }
+    }
+    if (u.pathname === '/api/search') {
+      const q = u.searchParams.get('q') || '';
+      if (!q.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: '请提供搜索关键词' }));
+      }
+      const results = await searchStocks(q);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify({ results }));
+    }
     if (u.pathname === '/api/analyze') {
       const code = u.searchParams.get('code') || '';
       if (!code.trim()) {

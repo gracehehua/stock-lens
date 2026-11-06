@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化选股 · 股票智研</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">研</span>
+    <div>
+      <h1>量化选股</h1>
+      <p>多因子打分 · 定期调仓回测 · 每日 Top10 交易计划</p>
+    </div>
+  </div>
+  <a class="nav-link" href="index.html">个股分析</a>
+  <a class="nav-link" href="portfolio.html" style="margin-left:8px">我的持仓</a>
+</header>
+
+<main class="container">
+  <!-- 策略说明 -->
+  <section class="card">
+    <h3 class="card-title">策略说明 <span class="title-note">因子定义 · 透明可复现</span></h3>
+    <div class="q-strategy">
+      <div><b>股票池</b><p>沪深主板 + 科创 + 创业，按总市值取前 300 只；剔除 ST/退市、股价&lt;2元、市值&lt;30亿、亏损或 PE&gt;200</p></div>
+      <div><b>因子与权重</b><p>60日动量 30% · 20日动量 25% · 趋势(价&gt;MA20&gt;MA60) 20% · 低波动 15% · 量比温和度(5日/60日均量，0.8~2.5 为佳) 10%</p></div>
+      <div><b>交易计划</b><p>每日收盘后重算，取综合评分 Top10，等权各 10%；回测按周（5 个交易日）调仓，双边各千一手续费</p></div>
+    </div>
+  </section>
+
+  <!-- 回测结果 -->
+  <section class="card">
+    <h3 class="card-title">策略回测 <span class="title-note" id="btNote">近一年 · 对照沪深300</span>
+      <button id="btBtn" class="q-btn">运行回测</button>
+    </h3>
+    <div id="btLoading" class="loading hidden">
+      <div class="spinner"></div>
+      <p id="btLoadingText">正在下载历史K线并回测，首次约需 1~3 分钟…</p>
+    </div>
+    <div id="btBody" class="hidden">
+      <div class="q-stats" id="btStats"></div>
+      <div id="btChart" class="chart-mid"></div>
+      <p class="pf-note" id="btCaveat"></p>
+    </div>
+    <div id="btError" class="error-box hidden"></div>
+  </section>
+
+  <!-- 今日 Top10 -->
+  <section class="card">
+    <h3 class="card-title">今日 Top10 交易计划 <span class="title-note" id="t10Note"></span>
+      <button id="t10Btn" class="q-btn">生成今日名单</button>
+      <a id="csvBtn" class="q-btn q-btn-ghost hidden" href="/api/quant/top10?format=csv" download>下载 CSV</a>
+    </h3>
+    <div id="t10Loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>正在全市场扫描打分，首次约需 1~2 分钟…</p>
+    </div>
+    <div id="t10Body" class="hidden">
+      <div class="table-wrap">
+        <table id="t10Table">
+          <thead>
+            <tr>
+              <th>#</th><th class="l">股票</th><th>评分</th><th>最新价</th><th>PE</th>
+              <th>20日动量</th><th>60日动量</th><th>市值(亿)</th><th>建议仓位</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="pf-note" id="t10Caveat"></p>
+    </div>
+    <div id="t10Error" class="error-box hidden"></div>
+  </section>
+
+  <footer class="disclaimer">免责声明：本页面所有选股与回测结果均由量化规则自动生成，仅为基于公开数据的研究参考，不构成投资建议。历史回测不代表未来收益，市场有风险，投资需谨慎。</footer>
+</main>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="quant.js"></script>
+</body>
+</html>

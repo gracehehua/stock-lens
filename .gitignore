@@ -1,11 +1,13 @@
 # 依赖与运行时产物
 node_modules/
 
-# 敏感配置（含 API Key 与访问令牌），不提交。请复制 llm.config.example.json 为 llm.config.json 后填写
+# 敏感配置（含 API Key、访问令牌与个人持仓），不提交。请复制 llm.config.example.json 为 llm.config.json 后填写
 llm.config.json
+portfolio.json
 
 # 运行时缓存与日志
 .sector-cache.json
+quant-cache/
 server.log
 *.log
 

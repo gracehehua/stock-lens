@@ -25,16 +25,21 @@
     <span class="logo">研</span>
     <div>
       <h1>股票智研</h1>
-      <p>输入代码 · 实时分析财务 / 行情 / 资金 / 要闻</p>
+      <p>输入代码或名称 · 实时分析财务 / 行情 / 资金 / 要闻</p>
     </div>
   </div>
+  <a class="nav-link" href="portfolio.html">我的持仓 →</a>
+  <a class="nav-link" href="quant.html" style="margin-left:8px">量化选股 →</a>
 </header>
 
 <main class="container">
   <section class="search-panel">
     <div class="search-box">
-      <input id="codeInput" type="text" placeholder="输入股票代码：A股 600519 / 港股 00700 / 美股 AAPL"
-             autocomplete="off" spellcheck="false">
+      <div class="input-wrap">
+        <input id="codeInput" type="text" placeholder="输入代码或名称：600519 / 茅台 / 腾讯 / 苹果"
+               autocomplete="off" spellcheck="false">
+        <div id="suggestBox" class="suggest-box hidden"></div>
+      </div>
       <button id="analyzeBtn">开始分析</button>
     </div>
     <div class="quick-codes">

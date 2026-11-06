@@ -8,9 +8,11 @@
 
 ## 2. 本地部署
 
+### 2.1 配置与开发启动
+
 ```bash
 # 进入项目目录
-cd stock-lens
+cd /home/brian/WorkBuddy/stock-lens
 
 # 配置密钥（首次）
 cp llm.config.example.json llm.config.json
@@ -19,19 +21,49 @@ cp llm.config.example.json llm.config.json
 #   deepseek.apiKey → DeepSeek API Key（留空则 AI 研报不可用）
 #   kimi.apiKey     → Kimi API Key（留空则 AI 研报不可用）
 
-# 启动（前台）
+# 开发时前台启动
 node server.js
-
-# 或后台守护运行
-nohup node server.js > server.log 2>&1 < /dev/null &
 ```
 
 默认端口 `8630`，可通过环境变量覆盖：`PORT=9000 node server.js`。
+
+### 2.2 生产运行：systemd 用户服务（当前机器已启用）
+
+生产环境不使用前台进程或 `nohup`，而是由 systemd 托管。当前配置提供：
+
+- `enable`：用户服务自动启动。
+- `Restart=always` + `RestartSec=5`：进程异常退出或被杀死后，5 秒内自动拉起。
+- `loginctl enable-linger brian`：电脑重启后，无需等待用户登录即启动用户服务。
+- `logs/server.log`：持久保存应用输出和异常日志。
+- cpolar 系统服务也已 `enabled`，开机自动建立公网隧道。
+
+首次安装或配置有更新时：
+
+```bash
+cd /home/brian/WorkBuddy/stock-lens
+mkdir -p "$HOME/.config/systemd/user" logs
+cp deploy/stock-lens.service "$HOME/.config/systemd/user/stock-lens.service"
+systemctl --user daemon-reload
+systemctl --user enable --now stock-lens.service
+loginctl enable-linger brian
+```
+
+日常运维：
+
+```bash
+systemctl --user status stock-lens       # 查看状态
+systemctl --user restart stock-lens      # 修改代码或配置后重启
+systemctl --user stop stock-lens         # 主动维护时停止（不会被自动拉起）
+systemctl --user start stock-lens        # 维护完成后启动
+tail -f logs/server.log                  # 查看应用日志
+loginctl show-user brian -p Linger       # 应显示 Linger=yes
+```
 
 验证：
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8630/          # 页面 → 200
+curl -s -o /dev/null -w "%{http_code}\n" https://stocklens.vip.cpolar.cn/ # 公网页面 → 200
 curl -s -H "x-access-token: 你的口令" "http://127.0.0.1:8630/api/analyze?code=600519"
 ```
 
@@ -79,4 +111,4 @@ sudo systemctl restart cpolar
 | 分析结果"数据源降级到腾讯" | 东财主源被限流，属正常容错；稍后自动恢复 |
 | AI 研报报"暂时不可用" | 检查 llm.config.json 的 Key 是否有效、是否欠费；规则引擎不受影响 |
 | 页面能打开但数据 401 | 令牌缓存失效，重新输入口令即可 |
-| 公网打不开 | 检查临时隧道进程 / 是否已 `systemctl restart cpolar` |
+| 公网打不开 | 先查 `systemctl --user status stock-lens` 和本地 8630 页面，再查 `systemctl status cpolar`；不要盲目只重启隧道 |

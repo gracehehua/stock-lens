@@ -1,5 +1,5 @@
 {
-  "accessToken": "在此填写访问口令（如 200093）",
+  "accessToken": "在此填写新的访问口令",
   "deepseek": {
     "baseUrl": "https://api.deepseek.com/v1/chat/completions",
     "apiKey": "在此填写 DeepSeek API Key",
